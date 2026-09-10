@@ -1,0 +1,29 @@
+spring:
+  datasource:
+    # Fresh in-memory DB per test class (random name), dropped when the last
+    # connection closes.
+    url: jdbc:h2:mem:test-${random.uuid};DB_CLOSE_DELAY=0
+    hikari:
+      maximum-pool-size: 4
+  sql:
+    init:
+      mode: always
+
+app:
+  ip-hash-salt: test-salt-fixed
+  # Fast analytics flush so tests don't wait; individual tests also call flush().
+  analytics:
+    flush-interval-ms: 100
+    batch-size: 50
+    queue-capacity: 2000
+  # Loose default limits; reliability tests tighten these with @TestPropertySource.
+  rate-limit:
+    write-capacity: 500
+    write-refill-per-second: 500
+    redirect-capacity: 1000
+    redirect-refill-per-second: 1000
+
+logging:
+  level:
+    root: WARN
+    com.example.urlshortener: WARN

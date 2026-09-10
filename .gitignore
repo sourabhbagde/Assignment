@@ -1,0 +1,17 @@
+# Build output
+**/target/
+**/build/
+**/dist/
+
+# Runtime data (embedded H2)
+**/data/
+
+# Logs
+*.log
+
+# OS / editor cruft
+.DS_Store
+*.iml
+*.ipr
+*.iws
+.idea/

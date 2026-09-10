@@ -1,0 +1,103 @@
+server:
+  port: 3000
+  shutdown: graceful
+  error:
+    whitelabel:
+      enabled: false
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+    include-exception: false
+  tomcat:
+    max-http-form-post-size: 16KB
+    max-swallow-size: 16KB
+    max-http-response-header-size: 8KB
+
+spring:
+  application:
+    name: url-shortener
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  threads:
+    virtual:
+      enabled: false
+  datasource:
+    url: jdbc:h2:file:./data/urlshortener;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password: ""
+    hikari:
+      pool-name: url-shortener-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 5000
+      max-lifetime: 600000
+  sql:
+    init:
+      mode: always
+      continue-on-error: false
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+    default-property-inclusion: non_null
+    time-zone: UTC
+  mvc:
+    throw-exception-if-no-handler-found: true
+  web:
+    resources:
+      add-mappings: false
+
+# Only the health endpoint is exposed, and it is mapped to /health (plus
+# /health/liveness and /health/readiness). No env / beans / mappings / heapdump.
+management:
+  endpoints:
+    web:
+      base-path: /
+      exposure:
+        include: health
+      path-mapping:
+        health: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      show-components: never
+      group:
+        readiness:
+          include: readinessState,db,analyticsQueue
+  health:
+    defaults:
+      enabled: true
+
+app:
+  base-url: ${BASE_URL:http://localhost:3000}
+  code-length: 7
+  code-max-attempts: 6
+  redirect-status: "302"
+  dedupe-by-default: true
+  max-url-length: 2048
+  block-private-addresses: true
+  validate-dns: false
+  ip-hash-salt: ${IP_HASH_SALT:dev-insecure-salt-change-me}
+  metadata-max-bytes: 4096
+  trust-forwarded-for: ${TRUST_FORWARDED_FOR:false}
+  rate-limit:
+    write-capacity: 20
+    write-refill-per-second: 2
+    redirect-capacity: 100
+    redirect-refill-per-second: 50
+  analytics:
+    flush-interval-ms: 1000
+    batch-size: 200
+    queue-capacity: 10000
+    referrer-max-length: 512
+    user-agent-max-length: 512
+  cache:
+    max-entries: 5000
+    ttl-ms: 60000
+
+logging:
+  level:
+    root: INFO
+    com.example.urlshortener: INFO
+    org.springframework.jdbc.core: WARN
