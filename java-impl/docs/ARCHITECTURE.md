@@ -1,5 +1,19 @@
 # Architecture Overview
 
+## Execution approach
+
+Engineer-led, AI-accelerated. Each unit of work was defined as a task with
+**intent, constraints, acceptance criteria and technical context**, handed to AI
+for a first pass, then reviewed and marked *generated / edited / rejected* with
+rationale. Delivery was **inner-to-outer** (domain → application → adapter/infra)
+so every layer had passing tests before the next depended on it. Quality gates on
+every task: `./mvnw test`, `./mvnw -Pquality verify` (SpotBugs), a manual
+security pass on the URL-safety boundary and input handling, and hot-path
+reasoning for zero awaited analytics I/O. Full traceability log, secure-AI-usage
+notes and human sign-off list are in
+[ENGINEERING_SUMMARY.md](ENGINEERING_SUMMARY.md#ai-assisted-execution-traceability);
+per-task decomposition is in [SCENARIOS.md](SCENARIOS.md).
+
 ## Components & tools
 
 | Component | Choice | Why |
