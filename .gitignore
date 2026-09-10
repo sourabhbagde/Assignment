@@ -15,3 +15,6 @@
 *.ipr
 *.iws
 .idea/
+
+# Editor / IDE workspace config (not an assignment artifact)
+.vscode/

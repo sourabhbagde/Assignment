@@ -1,0 +1,319 @@
+openapi: 3.0.3
+info:
+  title: URL Shortener API
+  version: 1.0.0
+  description: >
+    Create short links, redirect to their destinations, and read per-link click
+    analytics. Every error uses one envelope: `{ "error": { code, message,
+    details?, requestId, timestamp, path } }`. A per-request `X-Request-Id` is
+    returned on every response (an inbound well-formed one is honoured).
+servers:
+  - url: http://localhost:3000
+    description: Local default
+
+tags:
+  - name: Links
+  - name: Redirect
+  - name: Health
+
+paths:
+  /api/v1/urls:
+    post:
+      tags: [Links]
+      summary: Create a short link
+      description: >
+        Returns 201 for a newly created link, or 200 when an identical active
+        destination already exists and `dedupe` is not false (the existing code
+        is returned). A custom alias always bypasses dedupe.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateShortLinkRequest' }
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location: { schema: { type: string }, description: Absolute short URL }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShortLinkResponse' }
+        '200':
+          description: Existing link reused (dedupe)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShortLinkResponse' }
+        '400':
+          description: >
+            Validation failure. `error.code` is one of `INVALID_URL` (bad scheme,
+            SSRF target, credentials, control chars, too long), `INVALID_ALIAS`
+            (charset/length/reserved), `VALIDATION_ERROR` (e.g. past expiry, both
+            expiresAt and ttlSeconds), `MALFORMED_BODY` (bad JSON / unknown field).
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+        '409':
+          description: Custom alias already taken (`ALIAS_TAKEN`)
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+        '413':
+          description: Request body exceeds 16 KiB (`PAYLOAD_TOO_LARGE`)
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+        '415':
+          description: Content-Type is not application/json (`UNSUPPORTED_MEDIA_TYPE`)
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+        '429':
+          description: Write rate limit exceeded (`RATE_LIMITED`)
+          headers:
+            Retry-After: { schema: { type: integer }, description: Seconds until a token is available }
+            X-RateLimit-Limit: { schema: { type: integer } }
+            X-RateLimit-Remaining: { schema: { type: integer } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+        '503':
+          description: Could not allocate a unique code after retries (`CODE_ALLOCATION_FAILED`)
+          headers:
+            Retry-After: { schema: { type: integer } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    get:
+      tags: [Links]
+      summary: List links (newest first)
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: A page of links
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PageResponse' }
+        '400':
+          description: limit/offset out of range (`VALIDATION_ERROR`)
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+
+  /api/v1/urls/{code}:
+    parameters:
+      - $ref: '#/components/parameters/Code'
+    get:
+      tags: [Links]
+      summary: Get link metadata
+      responses:
+        '200':
+          description: The link
+          content: { application/json: { schema: { $ref: '#/components/schemas/ShortLinkResponse' } } }
+        '404':
+          description: No link for this code (`LINK_NOT_FOUND`)
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    delete:
+      tags: [Links]
+      summary: Deactivate a link (soft delete)
+      description: >
+        Idempotent-ish: 204 whether the link was active or already inactive; 404
+        only if the code never existed. The code is never recycled; redirects
+        subsequently return 410.
+      responses:
+        '204': { description: Deactivated }
+        '404':
+          description: No link for this code (`LINK_NOT_FOUND`)
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+
+  /api/v1/urls/{code}/stats:
+    parameters:
+      - $ref: '#/components/parameters/Code'
+      - name: from
+        in: query
+        description: ISO-8601 instant or date (inclusive lower bound)
+        schema: { type: string }
+      - name: to
+        in: query
+        description: ISO-8601 instant or date (inclusive upper bound; a bare date means end-of-day)
+        schema: { type: string }
+    get:
+      tags: [Links]
+      summary: Click analytics for a link
+      responses:
+        '200':
+          description: Aggregated analytics
+          content: { application/json: { schema: { $ref: '#/components/schemas/LinkStatisticsResponse' } } }
+        '400':
+          description: '`from` after `to`, or unparseable boundary (`VALIDATION_ERROR`)'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+        '404':
+          description: No link for this code (`LINK_NOT_FOUND`)
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+
+  /{code}:
+    get:
+      tags: [Redirect]
+      summary: Redirect to the destination and record a click
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '302':
+          description: >
+            Redirect to the destination (status configurable via
+            `app.redirect-status`). `Cache-Control: no-store` so a 302 keeps
+            counting clicks and takedowns propagate immediately.
+          headers:
+            Location: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+        '404':
+          description: Unknown or non-code path (`LINK_NOT_FOUND`)
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+        '410':
+          description: Link deactivated (`LINK_DEACTIVATED`) or expired (`LINK_EXPIRED`)
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+        '429':
+          description: Redirect rate limit exceeded (`RATE_LIMITED`)
+          content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Aggregate health (status only, no internals)
+      responses:
+        '200': { description: UP, content: { application/json: { schema: { $ref: '#/components/schemas/Health' } } } }
+        '503': { description: DOWN/degraded, content: { application/json: { schema: { $ref: '#/components/schemas/Health' } } } }
+  /health/liveness:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      responses:
+        '200': { description: Process is up }
+        '503': { description: Process is unhealthy }
+  /health/readiness:
+    get:
+      tags: [Health]
+      summary: Readiness probe (DB + analytics-queue headroom)
+      responses:
+        '200': { description: Ready to serve traffic }
+        '503': { description: Not ready (DB down or analytics queue saturated) }
+
+components:
+  parameters:
+    Code:
+      name: code
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9A-Za-z_-]{3,64}$' }
+
+  schemas:
+    CreateShortLinkRequest:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url:
+          type: string
+          maxLength: 8192
+          description: Absolute http/https destination
+          example: https://developer.mozilla.org/en-US/docs/Web/HTTP
+        customAlias:
+          type: string
+          minLength: 3
+          maxLength: 64
+          pattern: '^[0-9A-Za-z_-]+$'
+          description: Caller-chosen code; bypasses dedupe
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absolute expiry (mutually exclusive with ttlSeconds)
+        ttlSeconds:
+          type: integer
+          minimum: 1
+          maximum: 157680000
+          description: Relative expiry in seconds (mutually exclusive with expiresAt)
+        dedupe:
+          type: boolean
+          default: true
+          description: When true, an identical active destination returns its existing code
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Opaque key/value bag; serialized form capped at 4 KiB
+
+    ShortLinkResponse:
+      type: object
+      properties:
+        code: { type: string, example: aB3xK9p }
+        shortUrl: { type: string, example: http://localhost:3000/aB3xK9p }
+        longUrl: { type: string }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        active: { type: boolean }
+        metadata: { type: object, nullable: true, additionalProperties: true }
+
+    PageResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ShortLinkResponse' }
+        total: { type: integer, format: int64 }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    LinkStatisticsResponse:
+      type: object
+      properties:
+        code: { type: string }
+        longUrl: { type: string }
+        createdAt: { type: string, format: date-time }
+        totalClicks: { type: integer, format: int64, description: All-time, window-independent }
+        windowClicks: { type: integer, format: int64, description: Clicks within [from, to] }
+        window:
+          type: object
+          properties:
+            from: { type: string, format: date-time, nullable: true }
+            to: { type: string, format: date-time, nullable: true }
+        daily:
+          type: array
+          items:
+            type: object
+            properties:
+              day: { type: string, example: '2026-09-10' }
+              count: { type: integer, format: int64 }
+        topReferrers:
+          type: array
+          items: { $ref: '#/components/schemas/ValueCount' }
+        topUserAgents:
+          type: array
+          items: { $ref: '#/components/schemas/ValueCount' }
+        lastClickedAt: { type: string, format: date-time, nullable: true }
+
+    ValueCount:
+      type: object
+      properties:
+        value: { type: string, example: https://news.ycombinator.com }
+        count: { type: integer, format: int64 }
+
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: LINK_NOT_FOUND }
+            message: { type: string }
+            details:
+              type: array
+              nullable: true
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  message: { type: string }
+            requestId: { type: string }
+            timestamp: { type: string, format: date-time }
+            path: { type: string }
+
+    Health:
+      type: object
+      properties:
+        status: { type: string, example: UP }
+        groups:
+          type: array
+          items: { type: string }

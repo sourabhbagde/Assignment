@@ -179,30 +179,3 @@ infra/health/      analytics-queue health indicator
 infra/             startup sanity checks
 ```
 
----
-
-## IDE null-safety warnings — what appeared and how they were resolved
-
-`.vscode/settings.json` sets `java.compile.nullAnalysis.mode: automatic`, which makes
-the Eclipse/JDT language server turn on **strict annotation-based null analysis**
-as soon as it sees null annotations on the classpath — and Spring Framework 6.1
-(via Spring Boot 3.3) ships `@NonNull` on framework method parameters. Idiomatic
-Spring code that doesn't restate those annotations, or that passes a value whose
-nullness JDT can't prove, then shows up in the Problems panel. **None of these
-affected the Maven build or any test** (`./mvnw test` stayed green throughout) —
-they were tooling-level warnings only. All have been resolved:
-
-| Warning (JDT) | Where it fired | Why | Resolution |
-|---|---|---|---|
-| `Missing non-null annotation: inherited method … specifies this parameter as @NonNull` | `doFilterInternal` / `shouldNotFilter` in the 4 servlet filters; `onApplicationEvent` in `StartupSanityChecks` | Overriding a Spring method without repeating its `@NonNull` on the params | Added `@NonNull` (`org.springframework.lang`) to the overridden parameters — restates the existing contract |
-| `Null type safety: … 'URI' needs unchecked conversion to conform to '@NonNull URI'` | `UrlController`, `RedirectController` — `ResponseEntity.location(URI.create(...))` | `URI.create(...)` return type carries no null annotation | Replaced with `.header(HttpHeaders.LOCATION, <string>)` — same behaviour, one less allocation |
-| `Null type safety: … 'Map<String,…>' needs unchecked conversion to conform to '@NonNull Map<String,?>'` | `JdbcShortLinkRepository`, `JdbcClickEventRepository` — `Map.of(...)` passed to `JdbcTemplate` | `Map.of(...)` generic type args have unknown nullness | Switched every query argument to `MapSqlParameterSource` (also more consistent with the rest of each class) |
-| `Null type safety: … 'RowMapper<ShortLink>' needs unchecked conversion` | `JdbcShortLinkRepository.rowMapper` field | Field type not annotated, so field reads are nullness-unknown | Annotated the field `@NonNull` (its initialiser is a method reference, which is never null) |
-| `Null type safety: … 'SqlParameterSource[]' needs unchecked conversion` | `JdbcClickEventRepository.saveBatch` — `stream()…toArray(SqlParameterSource[]::new)` | `Stream.toArray(IntFunction)` return type carries no null annotation | Build the array with `new SqlParameterSource[events.size()]` + a `for` loop (a `new` array is provably non-null) |
-| `Null type safety: … 'String' needs unchecked conversion to '@NonNull String'` | `JdbcClickEventRepository.topBy` — `"""…""".formatted(column)` used as the SQL string | `String.formatted(...)` return type carries no null annotation | Removed the interpolation entirely: two fixed `TOP_REFERRERS_SQL` / `TOP_USER_AGENTS_SQL` constants, so no SQL is built from a variable anywhere |
-| `Redundant superinterface DisposableBean for the type RateLimitFilter` | `RateLimitFilter` class declaration | `OncePerRequestFilter` → `GenericFilterBean` already implements `DisposableBean` | Dropped `implements DisposableBean` and its import; `destroy()` still `@Override`s `GenericFilterBean.destroy()` |
-| `Null type safety: … 'Matcher<String>' / 'String' needs unchecked conversion` | `UrlControllerIT`, `RedirectControllerIT` | Hamcrest `matchesPattern` / `containsString` matcher args and a test-helper `String` param | Replaced the Hamcrest assertions with AssertJ on the captured response; `@NonNull` on the `create(...)` helper param |
-
-**Opt-out:** this analysis is not wired into the build or CI. If framework-interaction
-warnings become noise as the code grows, set
-`"java.compile.nullAnalysis.mode": "disabled"` in `.vscode/settings.json`.
